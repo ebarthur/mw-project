@@ -1,0 +1,153 @@
+services:
+  postgres-auth:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: mw-auth
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_auth_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d mw-auth"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  postgres-incident:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: mw-incident
+    ports:
+      - "5434:5432"
+    volumes:
+      - postgres_incident_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d mw-incident"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  postgres-dispatch:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: mw-dispatch
+    ports:
+      - "5435:5432"
+    volumes:
+      - postgres_dispatch_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d mw-dispatch"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  auth:
+    build:
+      context: .
+      dockerfile: auth/Dockerfile
+    ports:
+      - "3000:3000"
+    volumes:
+      # Local dev: load multiline JWT_PRIVATE_KEY from auth/.env via dotenv in /app/.env
+      - ./auth/.env:/app/.env:ro
+    depends_on:
+      postgres-auth:
+        condition: service_healthy
+    environment:
+      PORT: 3000
+      DATABASE_URL: postgresql://postgres:password@postgres-auth:5432/mw-auth?schema=public
+
+  incident:
+    build:
+      context: .
+      dockerfile: incident/Dockerfile
+    ports:
+      - "4001:4001"
+    depends_on:
+      postgres-incident:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      PORT: 4001
+      DATABASE_URL: postgresql://postgres:password@postgres-incident:5432/mw-incident?schema=public
+      REDIS_URL: redis://redis:6379
+
+  dispatch:
+    build:
+      context: .
+      dockerfile: dispatch/Dockerfile
+    ports:
+      - "4002:4002"
+    depends_on:
+      postgres-dispatch:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      PORT: 4002
+      DATABASE_URL: postgresql://postgres:password@postgres-dispatch:5432/mw-dispatch?schema=public
+      REDIS_URL: redis://redis:6379
+      REDIS_CONSUMER_NAME: dispatch-1
+
+  gateway:
+    build:
+      context: .
+      dockerfile: gateway/Dockerfile
+    ports:
+      - "4000:4000"
+    depends_on:
+      - auth
+      - incident
+      - dispatch
+    environment:
+      PORT: 4000
+      AUTH_SERVICE_URL: http://auth:3000
+      INCIDENTS_SERVICE_URL: http://incident:4001
+      DISPATCH_SERVICE_URL: http://dispatch:4002
+
+  client:
+    build:
+      context: .
+      dockerfile: client/Dockerfile
+    ports:
+      - "3002:3002"
+    depends_on:
+      - gateway
+    environment:
+      PORT: 3002
+      GATEWAY_BASE: http://gateway:4000
+      JWT_PUBLIC_KEY: |
+        -----BEGIN PUBLIC KEY-----
+        MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAyjzDESdFthqjQTkIgJdm
+        gC+xC43DwuaUbVLgxPSqpIJZBVsiJ/cFa0beypWLFx0vgP0TFrJUmiS/cVCFlHWl
+        SI1tQvBCNBWMfS4v1vDq6cwD8wJQoevGxDvHHACjRS6IMaw8vL8ky/OJSZKGOAhe
+        IVcEDjyMZU4BlUkDdkzfxmD7TBC6kJTDRlMmK85WgdqmljSgas+9MQPGVOKWKhHA
+        eVpDhSDIfJ4hAjoJ6ARVDb14WmR/ceKdnLT00zwUJxrHlfV+dLBdl0vzV8B3nk7C
+        eZIOA8fYsKMuBd0ny/WnwoN1efRlZkM21dL9KpSlAjJY83pRkI3NsJriQjA40uRt
+        1QIDAQAB
+        -----END PUBLIC KEY-----
+
+volumes:
+  postgres_auth_data:
+  postgres_incident_data:
+  postgres_dispatch_data:
+  redis_data:
